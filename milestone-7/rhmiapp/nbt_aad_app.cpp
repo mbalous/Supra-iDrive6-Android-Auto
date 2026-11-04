@@ -1181,8 +1181,7 @@ void setConnectingAnimation(bmw::PluginApp* app, bool on) {
 }
 
 // ---- start with the car --------------------------------------------------------------------------------------------
-time_t g_initTime = 0;
-bool g_autostartDone = false;
+nbt::bootguard::AutostartGate g_autostartGate;
 bool g_autostartShown = false;
 
 bool autostartOn() { return fileExists(kAutostartFile) || fileExists(kAutostartManual); }
@@ -1339,11 +1338,8 @@ bool onMenuIdriveToggle(void* /*app*/, const bmw::Parcel& /*args*/) {
 }
 
 // ---- "Start with the car" bootloop guard -------------------------------------------------------------------------
-// A tester's head unit reset 5 times in a row (2026-10-29): each boot autostarted nbt-aad, the phone connected and the
-// unit reset again. Each autostart is recorded (wall-clock seconds, persistent flash file); after kBootGuardMax of them
-// within kBootGuardWindowS the autostart is skipped. The daemon deletes the file on a clean exit and after 10 min of
-// uptime, so normal drives never add up; menu Start deletes it too. Ignition off/on within ~10 min keeps the unit up
-// (no new boot), so 3 cold boots in 15 min only happen when something resets the unit.
+// Each autostart is recorded in persistent storage before launch; after kBootGuardMax attempts within
+// kBootGuardWindowS the next is skipped. A clean daemon exit, 10 minutes of uptime, or menu Start clears it.
 const char* const kBootGuardFile = "/var/opt/aa/bootguard";
 const int  kBootGuardMax = 3;
 const long kBootGuardWindowS = 15 * 60;
@@ -1351,38 +1347,20 @@ const long kBootGuardWindowS = 15 * 60;
 // true = autostart may go ahead (and this boot is recorded).
 bool bootGuardAllows() {
     time_t now = time(NULL);
-    if ((long)now < nbt::bootguard::kClockValidFrom) {                      // before 2020: clock not set yet, times would be meaningless
-        alog("bootloop guard: wall clock not set (%ld): not counting this boot", (long)now);
-        return true;
-    }
-    long raw[8], t[8];
-    int nr = 0;
-    FILE* f = fopen(kBootGuardFile, "r");
-    if (f) {
-        long v;
-        while (nr < 8 && fscanf(f, "%ld", &v) == 1) raw[nr++] = v;
-        fclose(f);
-    }
-    int n = nbt::bootguard::recent(raw, nr, (long)now, kBootGuardWindowS, t, 8);
-    if (!nbt::bootguard::allows(n, kBootGuardMax)) {
-        alog("start with the car: SKIPPED by the bootloop guard: the head unit restarted %d times within %ld min while "
-             "nbt-aad was starting with it. Start it from this menu (that resets the guard); send both USB logs.",
-             n, kBootGuardWindowS / 60);
-        return false;
-    }
-    f = fopen(kBootGuardFile, "w");
-    if (!f) {
-        alog("bootloop guard: cannot write %s (errno %d): not counting this boot", kBootGuardFile, errno);
-        return true;
-    }
-    int from = n >= kBootGuardMax ? n - kBootGuardMax + 1 : 0;
-    for (int i = from; i < n; ++i) fprintf(f, "%ld\n", t[i]);
-    fprintf(f, "%ld\n", (long)now);
-    fflush(f);
-    fsync(fileno(f));                                    // must survive the very reset it is counting
-    fclose(f);
-    if (n) alog("bootloop guard: autostart %d of %d allowed within %ld min", n + 1, kBootGuardMax, kBootGuardWindowS / 60);
-    return true;
+    const nbt::bootguard::Io io = { &write, &fsync };
+    int error = 0;
+    nbt::bootguard::Result result = nbt::bootguard::record(kBootGuardFile, (long)now, kBootGuardWindowS,
+                                                          kBootGuardMax, io, &error);
+    if (result == nbt::bootguard::kAllowed) return true;
+    if (result == nbt::bootguard::kInvalidClock)
+        alog("start with the car: SKIPPED by the bootloop guard: wall clock not set (%ld); start manually", (long)now);
+    else if (result == nbt::bootguard::kLimit)
+        alog("start with the car: SKIPPED by the bootloop guard: %d autostarts within %ld min; "
+             "start manually to reset the guard and send both USB logs", kBootGuardMax, kBootGuardWindowS / 60);
+    else
+        alog("start with the car: SKIPPED by the bootloop guard: cannot read or persist %s (errno %d); "
+             "start manually and check storage", kBootGuardFile, error);
+    return false;
 }
 
 void bootGuardReset(const char* why) {
@@ -1391,9 +1369,16 @@ void bootGuardReset(const char* why) {
 
 // From the status poll: once, kAutostartDelayS after onInit.
 void serviceAutostart() {
-    if (g_autostartDone || !g_initTime || time(NULL) - g_initTime < kAutostartDelayS) return;
-    g_autostartDone = true;
+    if (g_autostartGate.done()) return;
+    timespec now = { 0, 0 };
+    bool clockOk = clock_gettime(CLOCK_MONOTONIC, &now) == 0;
+    nbt::bootguard::DelayDecision decision = g_autostartGate.poll(clockOk, now, kAutostartDelayS);
+    if (decision == nbt::bootguard::kWait) return;
     if (!autostartOn()) return;
+    if (decision == nbt::bootguard::kClockError) {
+        alog("start with the car: SKIPPED by the bootloop guard: monotonic clock unavailable; start manually");
+        return;
+    }
     DaemonState d = readDaemonState();
     if (d.pid != 0) { alog("start with the car: nbt-aad already running (pid %d)", d.pid); return; }
     if (!bootGuardAllows()) return;
@@ -1596,7 +1581,9 @@ bool appOnInit(bmw::PluginApp* self) {
     addAction(self, kActMenuIdrive, &onMenuIdriveToggle);
     addAction(self, kActDriveMode, &onDriveModeToggle);
     addAction(self, kActKombiNav, &onKombiNavToggle);
-    g_initTime = time(NULL);
+    timespec initTime = { 0, 0 };
+    bool initClockOk = clock_gettime(CLOCK_MONOTONIC, &initTime) == 0;
+    g_autostartGate.init(initClockOk, initTime);
     {
         bmw::ActionDelegate d;
         d.object = self;

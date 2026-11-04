@@ -30,6 +30,7 @@ SRC_test_audio_format      := src/sdr_builder.cpp
 SRC_test_audio_mixer       := src/audio/mixer.cpp src/audio/playout.cpp src/audio/drift.cpp src/audio/stream_rate.cpp
 SRC_test_audio_route       := src/audio/audio_route.cpp
 SRC_test_bcl_detect        := src/wireless_setup.cpp
+SRC_test_boot_guard        :=
 SRC_test_bt_play           := src/audio/bt_play.cpp
 SRC_test_car_config        := src/sdr_builder.cpp
 SRC_test_ccs_decoder       :=

@@ -35,7 +35,9 @@ companion app, developer mode, or "Start head unit server". iDrive's own binarie
 > step is timed; Force Stop waits 10 s (was 6 s) before SIGKILL. **"Start with the car" bootloop guard:** after 3
 > autostarts within 15 minutes (cold boots, so only when something resets the unit) the next boot skips the autostart
 > (`start with the car: SKIPPED by the bootloop guard`); menu Start, a clean daemon exit or 10 minutes of uptime reset
-> it (`/var/opt/aa/bootguard`).
+> it (`/var/opt/aa/bootguard`). If the clock is before 2020, the monotonic clock fails, or the guard file cannot be
+> read and durably updated, automatic startup is skipped for this app load; it does not retry if the clock becomes
+> valid later. Start manually from the menu and check the app log for the reason. The checkbox remains enabled.
 
 > NBT-AAD is free of charge. Selling it, or bundling it with anything sold, is not permitted.
 > If you paid for it, you were scammed. Official releases are published only at
